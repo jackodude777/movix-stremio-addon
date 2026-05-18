@@ -13,4 +13,5 @@ services:
       - ADDON_NAME=Movix
       - ADDON_ID=com.movix.stremio
     volumes:
-      - ./logs:/app/logs
+      - /mnt/tank/docker/movix-stremio-addon/data:/app/data
+      - /mnt/tank/docker/movix-stremio-addon/logs:/app/logs
