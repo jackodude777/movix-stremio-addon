@@ -1,18 +1,131 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const BASE_URL = process.env.MOVIX_BASE_URL || 'https://movix.tax';
+
+// ============================================================
+// AUTO URL RESOLVER
+// Movix change souvent de domaine (ex: movix.tax -> movix.cx)
+// Ce module suit les redirections HTTP automatiquement
+// et met a jour l'URL en memoire sans redemarrer le container.
+// ============================================================
+
+const SEED_URLS = [
+  process.env.MOVIX_BASE_URL || 'https://movix.tax',
+  'https://movix.tax',
+  'https://movix.cx',
+  'https://movix.lol',
+  'https://movix.wtf',
+];
+
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+};
+
+let currentBaseURL = process.env.MOVIX_BASE_URL || 'https://movix.tax';
+let lastChecked = 0;
+const CHECK_INTERVAL = 30 * 60 * 1000; // Verifier toutes les 30 minutes
+
+/**
+ * Suit les redirections HTTP d'une URL et retourne l'URL finale.
+ * Movix redirige automatiquement vers son nouveau domaine.
+ */
+async function resolveURL(startUrl) {
+  try {
+    const res = await axios.get(startUrl, {
+      headers: HEADERS,
+      timeout: 10000,
+      maxRedirects: 10,
+      validateStatus: (s) => s < 500,
+    });
+    // L'URL finale apres toutes les redirections
+    const finalURL = res.request?.res?.responseUrl || res.config?.url || startUrl;
+    const parsed = new URL(finalURL);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Verifie si l'URL courante est toujours valide.
+ * Si le site repond avec une redirection vers un autre domaine,
+ * on met a jour currentBaseURL automatiquement.
+ */
+async function refreshBaseURL() {
+  const now = Date.now();
+  if (now - lastChecked < CHECK_INTERVAL) return currentBaseURL;
+  lastChecked = now;
+
+  console.log(`[URL-Watcher] Verification de l'URL courante: ${currentBaseURL}`);
+
+  // 1. Essayer d'abord l'URL courante
+  const resolved = await resolveURL(currentBaseURL);
+  if (resolved && resolved !== currentBaseURL) {
+    console.log(`[URL-Watcher] Redirection detectee: ${currentBaseURL} -> ${resolved}`);
+    currentBaseURL = resolved;
+    return currentBaseURL;
+  }
+  if (resolved) {
+    console.log(`[URL-Watcher] URL toujours valide: ${currentBaseURL}`);
+    return currentBaseURL;
+  }
+
+  // 2. Si l'URL courante est morte, tester les URLs de secours
+  console.log(`[URL-Watcher] URL courante inaccessible, tentative des URLs de secours...`);
+  for (const seed of SEED_URLS) {
+    if (seed === currentBaseURL) continue;
+    const r = await resolveURL(seed);
+    if (r) {
+      console.log(`[URL-Watcher] Nouvelle URL trouvee via ${seed}: ${r}`);
+      currentBaseURL = r;
+      return currentBaseURL;
+    }
+  }
+
+  console.log(`[URL-Watcher] Aucune URL valide trouvee, on garde: ${currentBaseURL}`);
+  return currentBaseURL;
+}
+
+/**
+ * Retourne l'URL de base courante (avec verif automatique).
+ */
+async function getBaseURL() {
+  return await refreshBaseURL();
+}
+
+// Verifier l'URL au demarrage
+refreshBaseURL().then(url => {
+  console.log(`[URL-Watcher] URL initiale: ${url}`);
+});
+
+// ============================================================
+// SCRAPER
+// ============================================================
 
 async function fetchPage(url) {
   const res = await axios.get(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; StremioAddon/1.0)' },
-    timeout: 10000
+    headers: HEADERS,
+    timeout: 10000,
+    maxRedirects: 10,
   });
+  // Si la requete a ete redirigee vers un nouveau domaine, on met a jour
+  const finalURL = res.request?.res?.responseUrl || res.config?.url || url;
+  try {
+    const parsed = new URL(finalURL);
+    const newBase = `${parsed.protocol}//${parsed.host}`;
+    if (newBase !== currentBaseURL) {
+      console.log(`[URL-Watcher] Redirection detectee lors du scraping: ${currentBaseURL} -> ${newBase}`);
+      currentBaseURL = newBase;
+      lastChecked = Date.now();
+    }
+  } catch (e) {}
   return cheerio.load(res.data);
 }
 
 async function getMovies(skip = 0, search = '') {
   try {
-    let url = search
+    const BASE_URL = await getBaseURL();
+    const url = search
       ? `${BASE_URL}/?s=${encodeURIComponent(search)}`
       : `${BASE_URL}/films/page/${Math.floor(skip / 20) + 1}/`;
     const $ = await fetchPage(url);
@@ -35,7 +148,8 @@ async function getMovies(skip = 0, search = '') {
 
 async function getSeries(skip = 0, search = '') {
   try {
-    let url = search
+    const BASE_URL = await getBaseURL();
+    const url = search
       ? `${BASE_URL}/?s=${encodeURIComponent(search)}`
       : `${BASE_URL}/series/page/${Math.floor(skip / 20) + 1}/`;
     const $ = await fetchPage(url);
@@ -63,7 +177,10 @@ async function getStreams(link) {
     $('iframe, source, video').each((i, el) => {
       const src = $(el).attr('src') || $(el).attr('data-src') || '';
       if (src && (src.includes('http') || src.startsWith('//'))) {
-        streams.push({ title: 'Movix Stream ' + (i + 1), url: src.startsWith('//') ? 'https:' + src : src });
+        streams.push({
+          title: 'Movix Stream ' + (i + 1),
+          url: src.startsWith('//') ? 'https:' + src : src
+        });
       }
     });
     return streams;
@@ -73,4 +190,9 @@ async function getStreams(link) {
   }
 }
 
-module.exports = { getMovies, getSeries, getStreams };
+// Expose l'URL courante pour le monitoring
+function getCurrentURL() {
+  return currentBaseURL;
+}
+
+module.exports = { getMovies, getSeries, getStreams, getBaseURL, getCurrentURL };
