@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
+const express = require('express');
 const manifest = require('./manifest');
 const scraper = require('./scraper');
 
@@ -44,5 +45,35 @@ builder.defineStreamHandler(async ({ type, id }) => {
 });
 
 const PORT = process.env.PORT || 7000;
-serveHTTP(builder.getInterface(), { port: PORT });
+const addonInterface = builder.getInterface();
+
+// Creer un serveur Express pour ajouter des routes custom
+const app = express();
+
+// Route de statut - affiche l'URL courante detectee automatiquement
+app.get('/status', async (req, res) => {
+  const currentURL = scraper.getCurrentURL();
+  const resolvedURL = await scraper.getBaseURL();
+  res.json({
+    status: 'ok',
+    addon: manifest.name,
+    version: manifest.version,
+    movix_url_configured: process.env.MOVIX_BASE_URL || 'https://movix.tax',
+    movix_url_current: currentURL,
+    movix_url_resolved: resolvedURL,
+    message: currentURL !== (process.env.MOVIX_BASE_URL || 'https://movix.tax')
+      ? `URL mise a jour automatiquement: ${currentURL}`
+      : 'URL inchangee',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Monter l'addon Stremio sur Express
+app.use('/', (req, res, next) => {
+  // Laisser Express gerer /status, le SDK gere le reste
+  next();
+});
+
+serveHTTP(addonInterface, { port: PORT, app });
 console.log('Movix Stremio Addon running on port ' + PORT);
+console.log('Status: http://localhost:' + PORT + '/status');
