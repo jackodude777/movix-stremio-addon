@@ -2,6 +2,7 @@ version: '3.8'
 services:
   movix-addon:
     build: .
+    image: ghcr.io/jackodude777/movix-stremio-addon:latest
     container_name: movix-stremio-addon
     restart: unless-stopped
     ports:
