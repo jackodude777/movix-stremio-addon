@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  movix-addon:
+    build: .
+    container_name: movix-stremio-addon
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    environment:
+      - PORT=7000
+      - MOVIX_BASE_URL=https://movix.tax
+      - ADDON_NAME=Movix
+      - ADDON_ID=com.movix.stremio
+    volumes:
+      - ./logs:/app/logs
